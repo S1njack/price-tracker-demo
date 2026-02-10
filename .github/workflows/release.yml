@@ -1,0 +1,122 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-mac:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Install Python dependencies
+        run: |
+          python3 -m venv .build-venv
+          source .build-venv/bin/activate
+          pip install -r requirements-secure.txt pyinstaller
+
+      - name: Bundle Python backend
+        run: |
+          source .build-venv/bin/activate
+          pyinstaller backend.spec --distpath electron-resources/backend --noconfirm
+
+      - name: Install and copy Playwright Chromium
+        run: |
+          source .build-venv/bin/activate
+          python3 -m playwright install chromium
+          mkdir -p electron-resources/chromium
+          cp -r ~/Library/Caches/ms-playwright/* electron-resources/chromium/
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Package with electron-builder
+        run: npx electron-builder --mac
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac-release
+          path: release/*.dmg
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Install Python dependencies
+        run: |
+          python -m venv .build-venv
+          .\.build-venv\Scripts\Activate.ps1
+          pip install -r requirements-secure.txt pyinstaller
+
+      - name: Bundle Python backend
+        run: |
+          .\.build-venv\Scripts\Activate.ps1
+          pyinstaller backend.spec --distpath electron-resources/backend --noconfirm
+
+      - name: Install and copy Playwright Chromium
+        run: |
+          .\.build-venv\Scripts\Activate.ps1
+          python -m playwright install chromium
+          New-Item -ItemType Directory -Force -Path electron-resources\chromium
+          Copy-Item -Recurse -Force "$env:LOCALAPPDATA\ms-playwright\*" electron-resources\chromium\
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Package with electron-builder
+        run: npx electron-builder --win
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: win-release
+          path: release/*.exe
+
+  publish:
+    needs: [build-mac, build-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            mac-release/*.dmg
+            win-release/*.exe
+          generate_release_notes: true
