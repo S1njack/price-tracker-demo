@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import { TrendingUp, TrendingDown, Search, Plus, X, DollarSign, Package, ShoppingCart, Award, Trash2, Calendar, BarChart3 } from 'lucide-react';
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5001/api';
 
 const CATEGORIES = ['Electronics', 'Laptops', 'Tablets', 'Monitors', 'Peripherals', 'Components', 'Storage', 'Networking'];
 

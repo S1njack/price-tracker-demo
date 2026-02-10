@@ -967,14 +967,15 @@ if __name__ == '__main__':
     logger.info("="*60)
     logger.info("🔒 Secure Price Tracker API Starting")
     logger.info("="*60)
-    logger.info(f"Server: http://localhost:5000")
+    logger.info(f"Server: http://localhost:{port}")
     logger.info(f"Allowed Origins: {ALLOWED_ORIGINS}")
     logger.info("="*60)
 
     # In production, use a proper WSGI server (gunicorn, uwsgi)
     # Never use Flask's development server in production
+    port = int(os.environ.get('FLASK_PORT', 5001))
     app.run(
-        host='127.0.0.1',  # Only localhost in development
-        port=5000,
-        debug=os.environ.get('FLASK_ENV') != 'production'
+        host='127.0.0.1',
+        port=port,
+        debug=False
     )

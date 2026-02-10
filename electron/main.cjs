@@ -7,7 +7,7 @@ let mainWindow = null;
 let flaskProcess = null;
 let backendLogs = [];
 
-const FLASK_PORT = 5000;
+const FLASK_PORT = 5001;
 const FLASK_URL = `http://localhost:${FLASK_PORT}`;
 const IS_WIN = process.platform === 'win32';
 const IS_MAC = process.platform === 'darwin';
@@ -76,7 +76,34 @@ function getBackendCommand() {
   return { command: pythonCmd, args: [apiPath], isBundle: false };
 }
 
+function killProcessOnPort(port) {
+  try {
+    if (IS_WIN) {
+      const result = execSync(`netstat -ano | findstr :${port} | findstr LISTENING`, { encoding: 'utf8' });
+      const lines = result.trim().split('\n');
+      for (const line of lines) {
+        const pid = line.trim().split(/\s+/).pop();
+        if (pid && pid !== '0') {
+          execSync(`taskkill /pid ${pid} /f`);
+          log(`[Electron] Killed process ${pid} on port ${port}`);
+        }
+      }
+    } else {
+      const result = execSync(`lsof -ti :${port}`, { encoding: 'utf8' });
+      const pids = result.trim().split('\n').filter(Boolean);
+      for (const pid of pids) {
+        execSync(`kill -9 ${pid}`);
+        log(`[Electron] Killed process ${pid} on port ${port}`);
+      }
+    }
+  } catch {
+    // No process on that port — good
+  }
+}
+
 function startFlask() {
+  killProcessOnPort(FLASK_PORT);
+
   const backend = getBackendCommand();
 
   if (!backend) {
@@ -94,6 +121,7 @@ function startFlask() {
   const env = {
     ...process.env,
     PRICE_TRACKER_DATA: dataDir,
+    FLASK_PORT: String(FLASK_PORT),
     ALLOWED_ORIGINS: `http://localhost:5173,http://localhost:${FLASK_PORT},file://`,
   };
 
