@@ -1,22 +1,26 @@
 const { app, BrowserWindow, dialog } = require('electron');
 const path = require('path');
-const { spawn } = require('child_process');
+const { spawn, execSync } = require('child_process');
 const fs = require('fs');
 
 let mainWindow = null;
 let flaskProcess = null;
+let backendLogs = [];
 
 const FLASK_PORT = 5000;
 const FLASK_URL = `http://localhost:${FLASK_PORT}`;
 const IS_WIN = process.platform === 'win32';
 const IS_MAC = process.platform === 'darwin';
 
+function log(msg) {
+  console.log(msg);
+  backendLogs.push(msg);
+  // Keep only last 50 lines
+  if (backendLogs.length > 50) backendLogs.shift();
+}
+
 /**
  * Get the OS-specific writable data directory.
- * Electron's app.getPath('userData') resolves to:
- *   macOS:   ~/Library/Application Support/Price Tracker/
- *   Windows: %APPDATA%/Price Tracker/
- *   Linux:   ~/.config/Price Tracker/
  */
 function getDataDir() {
   const dir = app.getPath('userData');
@@ -32,9 +36,37 @@ function getDataDir() {
  */
 function getBackendCommand() {
   if (app.isPackaged) {
-    // Packaged: PyInstaller binary lives in resources/backend/
     const binaryName = IS_WIN ? 'api_secure.exe' : 'api_secure';
     const binaryPath = path.join(process.resourcesPath, 'backend', 'api_secure', binaryName);
+
+    // Check if binary exists
+    if (!fs.existsSync(binaryPath)) {
+      log(`[Electron] ERROR: Backend binary not found at: ${binaryPath}`);
+      // List what's actually in the resources dir for debugging
+      try {
+        const backendDir = path.join(process.resourcesPath, 'backend');
+        if (fs.existsSync(backendDir)) {
+          const files = fs.readdirSync(backendDir);
+          log(`[Electron] Contents of ${backendDir}: ${files.join(', ')}`);
+        } else {
+          log(`[Electron] Backend directory does not exist: ${backendDir}`);
+        }
+      } catch (e) {
+        log(`[Electron] Could not list backend dir: ${e.message}`);
+      }
+      return null;
+    }
+
+    // Ensure execute permission on macOS/Linux
+    if (!IS_WIN) {
+      try {
+        fs.chmodSync(binaryPath, 0o755);
+        log(`[Electron] Set execute permission on backend binary`);
+      } catch (e) {
+        log(`[Electron] WARNING: Could not chmod binary: ${e.message}`);
+      }
+    }
+
     return { command: binaryPath, args: [], isBundle: true };
   }
 
@@ -45,10 +77,16 @@ function getBackendCommand() {
 }
 
 function startFlask() {
-  const { command, args, isBundle } = getBackendCommand();
+  const backend = getBackendCommand();
+
+  if (!backend) {
+    log('[Electron] Cannot start backend - binary not found');
+    return false;
+  }
+
+  const { command, args, isBundle } = backend;
   const dataDir = getDataDir();
 
-  // Working directory: project root in dev, resources/backend in packaged
   const cwd = isBundle
     ? path.join(process.resourcesPath, 'backend', 'api_secure')
     : path.join(__dirname, '..');
@@ -59,14 +97,14 @@ function startFlask() {
     ALLOWED_ORIGINS: `http://localhost:5173,http://localhost:${FLASK_PORT},file://`,
   };
 
-  // Point Playwright at the bundled Chromium when packaged
   if (app.isPackaged) {
     env.PLAYWRIGHT_BROWSERS_PATH = path.join(process.resourcesPath, 'chromium');
   }
 
-  console.log(`[Electron] Starting backend: ${command} ${args.join(' ')}`);
-  console.log(`[Electron] Data dir: ${dataDir}`);
-  console.log(`[Electron] CWD: ${cwd}`);
+  log(`[Electron] Starting backend: ${command} ${args.join(' ')}`);
+  log(`[Electron] Data dir: ${dataDir}`);
+  log(`[Electron] CWD: ${cwd}`);
+  log(`[Electron] Binary exists: ${fs.existsSync(command)}`);
 
   flaskProcess = spawn(command, args, {
     cwd,
@@ -75,22 +113,24 @@ function startFlask() {
   });
 
   flaskProcess.stdout.on('data', (data) => {
-    console.log(`[Flask] ${data.toString().trim()}`);
+    log(`[Flask] ${data.toString().trim()}`);
   });
 
   flaskProcess.stderr.on('data', (data) => {
-    console.error(`[Flask] ${data.toString().trim()}`);
+    log(`[Flask stderr] ${data.toString().trim()}`);
   });
 
   flaskProcess.on('close', (code) => {
-    console.log(`[Flask] Process exited with code ${code}`);
+    log(`[Flask] Process exited with code ${code}`);
     flaskProcess = null;
   });
 
   flaskProcess.on('error', (err) => {
-    console.error(`[Flask] Failed to start: ${err.message}`);
+    log(`[Flask] Failed to start: ${err.message}`);
     flaskProcess = null;
   });
+
+  return true;
 }
 
 async function waitForFlask(maxRetries = 30) {
@@ -98,12 +138,13 @@ async function waitForFlask(maxRetries = 30) {
     try {
       const response = await fetch(`${FLASK_URL}/api/health`);
       if (response.ok) {
-        console.log('[Electron] Flask is ready');
+        log('[Electron] Flask is ready');
         return true;
       }
     } catch {
       // Flask not ready yet
     }
+    log(`[Electron] Waiting for Flask... (${i + 1}/${maxRetries})`);
     await new Promise((resolve) => setTimeout(resolve, 1000));
   }
   return false;
@@ -124,11 +165,9 @@ function createWindow() {
   });
 
   if (!app.isPackaged && process.env.NODE_ENV === 'development') {
-    // Dev mode: load from Vite dev server
     mainWindow.loadURL('http://localhost:5173');
     mainWindow.webContents.openDevTools();
   } else {
-    // Production: load built files
     const indexPath = path.join(__dirname, '..', 'dist', 'index.html');
     mainWindow.loadFile(indexPath);
   }
@@ -138,19 +177,14 @@ function createWindow() {
   });
 }
 
-/**
- * Kill the Flask backend process (cross-platform).
- */
 function killFlask() {
   if (!flaskProcess) return;
 
-  console.log('[Electron] Killing Flask process');
+  log('[Electron] Killing Flask process');
 
   if (IS_WIN) {
-    // Windows: use taskkill to kill the process tree
     spawn('taskkill', ['/pid', String(flaskProcess.pid), '/f', '/t']);
   } else {
-    // macOS/Linux: SIGTERM for graceful shutdown
     flaskProcess.kill('SIGTERM');
   }
 
@@ -158,7 +192,6 @@ function killFlask() {
 }
 
 app.whenReady().then(async () => {
-  // Show loading window
   const loadingWindow = new BrowserWindow({
     width: 400,
     height: 200,
@@ -177,18 +210,32 @@ app.whenReady().then(async () => {
       </body>
     </html>`);
 
-  startFlask();
+  const started = startFlask();
+
+  if (!started) {
+    loadingWindow.close();
+    dialog.showErrorBox(
+      'Server Failed to Start',
+      'The backend binary was not found in the application bundle.\n\n' +
+      'Debug info:\n' + backendLogs.join('\n')
+    );
+    app.quit();
+    return;
+  }
 
   const ready = await waitForFlask();
 
   loadingWindow.close();
 
   if (!ready) {
-    const message = app.isPackaged
-      ? 'The backend server failed to start.\n\nTry reinstalling the application.'
-      : 'The Flask API server failed to start within 30 seconds.\n\nCheck that all Python dependencies are installed:\n  pip install -r requirements-secure.txt';
+    const debugInfo = backendLogs.slice(-20).join('\n');
 
-    dialog.showErrorBox('Server Failed to Start', message);
+    dialog.showErrorBox(
+      'Server Failed to Start',
+      app.isPackaged
+        ? `The backend server failed to start.\n\nLogs:\n${debugInfo}`
+        : 'The Flask API server failed to start within 30 seconds.\n\nCheck that all Python dependencies are installed:\n  pip install -r requirements-secure.txt'
+    );
     app.quit();
     return;
   }
